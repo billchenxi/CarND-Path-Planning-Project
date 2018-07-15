@@ -194,7 +194,7 @@ int main() {
 
     // Spline code
     int lane = 1;
-    double ref_vel = 49.5; // have a reference velocity to target, mph.
+    double ref_vel = 0.0; // have a reference velocity to target, mph.
     // Spline end
 
 
@@ -262,10 +262,17 @@ int main() {
                             // check s values greater than mine and s gap
                             if((check_car_s > car_s) && ((check_car_s - car_s)<30)){
                                 // Do some logic here, lower reference velocity so we don't crash into the car in front of use could also flag to try to change lanes.
-                                ref_vel = 29.5;
+                                // ref_vel = 29.5;
+                                too_close = true;
                             }
                         }
 
+                    }
+                    if(too_close){
+                        ref_vel -= .224;
+                    }
+                    else if(ref_vel < 49.5){
+                        ref_vel += .224;
                     }
 
                     // create a list of widely spaced (x, y) waypoints, evenly spaced at 30m
