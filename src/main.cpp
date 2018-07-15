@@ -198,6 +198,8 @@ int main() {
     // Spline end
 
 
+
+
     h.onMessage([&map_waypoints_x, &map_waypoints_y, &map_waypoints_s, &map_waypoints_dx, &map_waypoints_dy, &ref_vel, &lane](
             uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
             uWS::OpCode opCode) {
@@ -238,6 +240,33 @@ int main() {
 
                     // TODO Start
                     int prev_size = previous_path_x.size();
+
+                    // Avoid car from us, use the sensor fusion
+                    if(prev_size > 0){
+                        car_s =  end_path_s;
+                    }
+
+                    bool too_close = false;
+
+                    // find ref_v to use
+                    for(int i=0; i<sensor_fusion.size(); i++){
+                        //car is in my lane
+                        float d = sensor_fusion[i][6];
+                        if( d<(2+4*lane+2) && d>(2+4*lane-2) ){
+                            double vx = sensor_fusion[i][3];
+                            double vy = sensor_fusion[i][4];
+                            double check_speed = sqrt(vx*vx +vy*vy);
+                            double check_car_s = sensor_fusion[i][5];
+
+                            check_car_s += ((double)prev_size*.2*check_speed); // if using previous points can project s value out
+                            // check s values greater than mine and s gap
+                            if((check_car_s > car_s) && ((check_car_s - car_s)<30)){
+                                // Do some logic here, lower reference velocity so we don't crash into the car in front of use could also flag to try to change lanes.
+                                ref_vel = 29.5;
+                            }
+                        }
+
+                    }
 
                     // create a list of widely spaced (x, y) waypoints, evenly spaced at 30m
                     // later we will interoplate these way points with a spline and fill it in with more points that control speed.
@@ -353,20 +382,6 @@ int main() {
                     json msgJson;
 
 
-
-                    // TODO: define a path made up of (x,y) points that the car will visit sequentially every .02 seconds
-                    double dist_inc = 0.3; // shorten the distance, will keep the average speed under control.
-                    for (int i = 0; i < 50; i++) {
-
-                        double next_s = car_s + (i+1) * dist_inc; // need to use i+1, other wise we are using the current position.
-                        double next_d = 6; // 1.5 * 4, 4 is lane width.
-                        // vector<double> xy= getXY(next_s, next_d, map_waypoints_s, map_waypoints_x, map_waypoints_y); // instead using auto
-                        auto xy= getXY(next_s, next_d, map_waypoints_s, map_waypoints_x, map_waypoints_y);
-
-                        next_x_vals.push_back(xy[0]);
-                        next_y_vals.push_back(xy[1]);
-                    }
-                    // TODO END
                     msgJson["next_x"] = next_x_vals;
                     msgJson["next_y"] = next_y_vals;
 
