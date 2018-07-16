@@ -9,6 +9,8 @@
 #include "Eigen-3.3/Eigen/QR"
 #include "json.hpp"
 #include "spline.h"
+#include <time.h>
+#include <cmath>
 
 using namespace std;
 
@@ -190,16 +192,14 @@ int main() {
         map_waypoints_dy.push_back(d_y);
     }
 
-
-    int lane = 1;
+    int lane = 1; // star in the middle lane
     // double ref_vel = 49.5; // have a reference velocity to target, mph.
     double ref_vel = 0.0; // cold start
+    // make change lane smooth
+    auto change_lane_timestamp = clock(); // first timestamp
+    auto current_time = change_lane_timestamp; // set the current time as first timestamp
 
-
-
-
-
-    h.onMessage([&map_waypoints_x, &map_waypoints_y, &map_waypoints_s, &map_waypoints_dx, &map_waypoints_dy, &ref_vel, &lane](
+    h.onMessage([&map_waypoints_x, &map_waypoints_y, &map_waypoints_s, &map_waypoints_dx, &map_waypoints_dy, &ref_vel, &lane, &change_lane_timestamp, &current_time](
             uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
             uWS::OpCode opCode) {
         // "42" at the start of the message means there's a websocket message event.
@@ -242,26 +242,28 @@ int main() {
 
                     // Avoid car from us, use the sensor fusion
                     if(prev_size > 0){
-                        car_s =  end_path_s;
+                        car_s = end_path_s;
                     }
 
                     bool too_close = false;
                     bool change_lane = false;
                     int num_lanes = 3;
 
-                    vector<double> lane_speed;
-                    vector<bool> lane_free;
+                    vector<double> lane_speed; // keep all 3 lane spped
+                    vector<bool> lane_free; // whether is free for any 3 lanes
 
+                    // set default lane situation.
                     for(int i=0; i<num_lanes; i++){
-                        lane_speed.push_back(1000); // keep lane speed
-                        lane_free.push_back(true); // lane free or not
+                        lane_speed.push_back(1000);
+                        lane_free.push_back(true);
                     }
 
                     int new_lane = lane;
-                    double time_step=0.02, safe_dist=15; // m
+                    double time_step=0.02;
+                    double safe_dist=15; // m
                     double warn_dist = 30; //m
                     double next_check = 2; //s
-                    double self_next_s = car_s + car_speed * next_check;
+                    double self_next_s = car_s + car_speed * next_check; // next position.
 
 
                     // find ref_v to use
@@ -269,11 +271,11 @@ int main() {
                         //car is in my lane
                         float d = sensor_fusion[i][6];
                         // determine which lane the surrounding car is
-                        int car_lane = 0; // left lane
+                        int check_lane = 0; // left lane
                         if(d>4){
-                            car_lane = 1; // middle lane
+                            check_lane = 1; // middle lane
                         }else if(d>8.0){
-                            car_lane = 2; // right lane
+                            check_lane = 2; // right lane
                         }
 
 
@@ -286,33 +288,31 @@ int main() {
 
 
                         if( d<(2+4*lane+2) && d>(2+4*lane-2) ){
-                            check_car_s += ((double)prev_size*.2*check_speed); // if using previous points can project s value out
+                            check_car_s += ((double)prev_size*time_step*check_speed); // if using previous points can project s value out
                             // check s values greater than mine and s gap
-                            if((check_car_s > car_s) && ((check_car_s - car_s)<warn_dist)){
+                            if((check_car_s > car_s) && ((check_car_s-car_s) < warn_dist)){
                                 // Do some logic here, lower reference velocity so we don't crash into the car in front of use could also flag to try to change lanes.
                                 // ref_vel = 29.5;
                                 too_close = true;
-//                                if(lane > 0){
-//                                    lane = 0;
-//                                }
                             }
                         }
 
                         // check whether lane is free?
-                        if( (car_s-2*safe_dist)<check_car_s && (car_s+safe_dist)<check_car_s){
-                            lane_free[car_lane] = false;
+                        if( (car_s-2*safe_dist)<check_car_s && (car_s+safe_dist)>check_car_s){
+                            lane_free[check_lane] = false;
                         }
 
                         // change lane speed if the condition obtains
-                        if( lane_speed[car_lane]>car_speed ){
-                            lane_speed[car_lane] = car_speed;
+                        if( lane_speed[check_lane]>car_speed ){
+                            lane_speed[check_lane] = car_speed;
                         }
                     }
 
 
                     // change to the best lane ********************
                     // check whether at least one lane is free.
-                    change_lane = all_of(lane_free.begin(), lane_free.end(), [](bool e){return e ==false;});
+                    // logic here is if all lanes are false, so as long as there's one is true, it will be false for all then ! will change to true.
+                    change_lane = !all_of(lane_free.begin(), lane_free.end(), [](bool e){return e ==false;});
 
                     if(change_lane){
                         switch(lane){
@@ -339,14 +339,48 @@ int main() {
                         }
                     }
 
+                    // avoid switch lane too fast
+                    current_time = clock();
+
+                    bool d_change = ((current_time - change_lane_timestamp)
+                                     /10000) > 5.0; // s
+
+                    /* Change lane condition
+                     *  - there's a car in the front;
+                     *  - changing lane is possible;
+                     *  - new lane is a different one than current one;
+                     *  - the changing lane was not happened recently, > 0.5s;
+                     * */
+                    if(too_close && change_lane && new_lane!=lane && d_change){
+                        lane = new_lane; // change to lane
+                        change_lane_timestamp = clock(); // save to timestep
+                        // ref_vel -= .224;
+                        for(int i=0; i< num_lanes; i++){
+                            lane_speed[i] = 1000;
+                        }
+                        too_close = false;
+                    }
+//                    else if(ref_vel < 49.5){
+//                        ref_vel += .224;
+//                    }
+//                    else if(ref_vel >= 49.5){
+//                        ref_vel -= .224;
+//                    }
+
+                    // reset lane to be free
+                    for(int i=0; i<num_lanes; i++){
+                        lane_free[i] = true;
+                    }
+
+                    // control the velocity smoothness
+                    double d_vel = 0.224;
+                    double target_vel = 49.5;
+
+                    // if there's a car in the front, slow down.
                     if(too_close){
-                        ref_vel -= .224;
-                    }
-                    else if(ref_vel < 49.5){
-                        ref_vel += .224;
-                    }
-                    else if(ref_vel >= 49.5){
-                        ref_vel -= .224;
+                        ref_vel -= d_vel;
+                    } else if(ref_vel < target_vel){
+                        ref_vel += d_vel;
                     }
 
                     // create a list of widely spaced (x, y) waypoints, evenly spaced at 30m
@@ -439,7 +473,7 @@ int main() {
                     double x_add_on = 0; // car coor
                     // fill up the rest of the path planner after filling it with previous points, here we will always output 50 points, so if we already have some, we don't need to regenerate
                     for(int i=0; i<=50-previous_path_x.size(); i++){
-                        double N = (target_dist/(0.2*ref_vel/2.24)); // calculate how many points needed
+                        double N = (target_dist/(time_step*ref_vel/2.24)); // calculate how many points needed
                         double x_point = x_add_on + target_x/N;
                         double y_point = s(x_point);
 
@@ -449,7 +483,7 @@ int main() {
 
                         // rotate back to normal after rotating it earlier; bakc to global coor
                         x_point = (x_ref * cos(ref_yaw) - y_ref * sin(ref_yaw));
-                        y_point = (y_ref * sin(ref_yaw) + y_ref * cos(ref_yaw));
+                        y_point = (x_ref * sin(ref_yaw) + y_ref * cos(ref_yaw));
 
                         x_point += ref_x;
                         y_point += ref_y;
