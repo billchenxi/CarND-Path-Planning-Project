@@ -17,9 +17,7 @@ using json = nlohmann::json;
 
 // For converting back and forth between radians and degrees.
 constexpr double pi() { return M_PI; }
-
 double deg2rad(double x) { return x * pi() / 180; }
-
 double rad2deg(double x) { return x * 180 / pi(); }
 
 // Checks if the SocketIO event has JSON data.
@@ -192,10 +190,11 @@ int main() {
         map_waypoints_dy.push_back(d_y);
     }
 
-    // Spline code
+
     int lane = 1;
-    double ref_vel = 0.0; // have a reference velocity to target, mph.
-    // Spline end
+    // double ref_vel = 49.5; // have a reference velocity to target, mph.
+    double ref_vel = 0.0; // cold start
+
 
 
 
@@ -238,7 +237,7 @@ int main() {
                     // Sensor Fusion Data, a list of all other cars on the same side of the road.
                     auto sensor_fusion = j[1]["sensor_fusion"];
 
-                    // TODO Start
+                    // TODO Start ***********************************
                     int prev_size = previous_path_x.size();
 
                     // Avoid car from us, use the sensor fusion
@@ -247,32 +246,107 @@ int main() {
                     }
 
                     bool too_close = false;
+                    bool change_lane = false;
+                    int num_lanes = 3;
+
+                    vector<double> lane_speed;
+                    vector<bool> lane_free;
+
+                    for(int i=0; i<num_lanes; i++){
+                        lane_speed.push_back(1000); // keep lane speed
+                        lane_free.push_back(true); // lane free or not
+                    }
+
+                    int new_lane = lane;
+                    double time_step=0.02, safe_dist=15; // m
+                    double warn_dist = 30; //m
+                    double next_check = 2; //s
+                    double self_next_s = car_s + car_speed * next_check;
+
 
                     // find ref_v to use
                     for(int i=0; i<sensor_fusion.size(); i++){
                         //car is in my lane
                         float d = sensor_fusion[i][6];
-                        if( d<(2+4*lane+2) && d>(2+4*lane-2) ){
-                            double vx = sensor_fusion[i][3];
-                            double vy = sensor_fusion[i][4];
-                            double check_speed = sqrt(vx*vx +vy*vy);
-                            double check_car_s = sensor_fusion[i][5];
+                        // determine which lane the surrounding car is
+                        int car_lane = 0; // left lane
+                        if(d>4){
+                            car_lane = 1; // middle lane
+                        }else if(d>8.0){
+                            car_lane = 2; // right lane
+                        }
 
+
+                        double vx = sensor_fusion[i][3];
+                        double vy = sensor_fusion[i][4];
+
+                        double check_speed = sqrt(vx*vx +vy*vy);
+                        double check_car_s = sensor_fusion[i][5];
+                        double check_car_future_s = check_car_s + check_speed * next_check;
+
+
+                        if( d<(2+4*lane+2) && d>(2+4*lane-2) ){
                             check_car_s += ((double)prev_size*.2*check_speed); // if using previous points can project s value out
                             // check s values greater than mine and s gap
-                            if((check_car_s > car_s) && ((check_car_s - car_s)<30)){
+                            if((check_car_s > car_s) && ((check_car_s - car_s)<warn_dist)){
                                 // Do some logic here, lower reference velocity so we don't crash into the car in front of use could also flag to try to change lanes.
                                 // ref_vel = 29.5;
                                 too_close = true;
+//                                if(lane > 0){
+//                                    lane = 0;
+//                                }
                             }
                         }
 
+                        // check whether lane is free?
+                        if( (car_s-2*safe_dist)<check_car_s && (car_s+safe_dist)<check_car_s){
+                            lane_free[car_lane] = false;
+                        }
+
+                        // change lane speed if the condition obtains
+                        if( lane_speed[car_lane]>car_speed ){
+                            lane_speed[car_lane] = car_speed;
+                        }
                     }
+
+
+                    // change to the best lane ********************
+                    // check whether at least one lane is free.
+                    change_lane = all_of(lane_free.begin(), lane_free.end(), [](bool e){return e ==false;});
+
+                    if(change_lane){
+                        switch(lane){
+                            // self_car is in the left lane.
+                            case 0:
+                                new_lane = lane_free[1] ? 1 : lane;
+                                break;
+
+                            // self_car is in the middle lane.
+                            case 1:
+                                if(lane_speed[0] > lane_speed[2]){
+                                    if(lane_free[0]) new_lane = 0;
+                                    else if(lane_free[2]) new_lane = 2;
+                                }else{
+                                    if(lane_free[2]) new_lane = 2;
+                                    else if(lane_free[0]) new_lane = 0;
+                                }
+                            break;
+
+                            // self_car is in the right lane
+                            case 2:
+                                new_lane = lane_free[1] ? 1 : lane;
+                                break;
+                        }
+                    }
+
                     if(too_close){
                         ref_vel -= .224;
                     }
                     else if(ref_vel < 49.5){
                         ref_vel += .224;
+                    }
+                    else if(ref_vel >= 49.5){
+                        ref_vel -= .224;
                     }
 
                     // create a list of widely spaced (x, y) waypoints, evenly spaced at 30m
